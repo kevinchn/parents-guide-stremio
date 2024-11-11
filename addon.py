@@ -142,7 +142,8 @@ def format_season_episode(id: str) -> str:
         season = parts[-2].zfill(2)
         episode = parts[-1].split('-')[0].zfill(2)
         return f"S{season}E{episode}"
-    except:
+    except Exception as e:
+        logger.error(f"Error in format_season_episode: {e}")
         return "S00E00"
 
 def get_soup(id: str) -> Optional[BeautifulSoup]:
@@ -156,21 +157,27 @@ def get_soup(id: str) -> Optional[BeautifulSoup]:
             'scheme': 'https',
             'authority': 'www.imdb.com'
         }
-        page = requests.get(f'https://www.imdb.com/title/{id}/parentalguide', headers=headers)
-        soup = BeautifulSoup(page.content, 'html5lib')
+        response = requests.get(f'https://www.imdb.com/title/{id}/parentalguide', headers=headers, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, 'html5lib')
         return soup
     except Exception as e:
-        logger.error(f"Error in get_soup: {e}")
+        logger.error(f"Error in get_soup for ID {id}: {e}")
         return None
 
 def parse_section(soup: Optional[BeautifulSoup]) -> str:
     """Parse a content section."""
     if not soup:
         return ""
-    section_comment_tags = soup.find_all('li', {'class': 'ipl-zebra-list__item'})
-    section_comment_list = [comment.text.strip() for comment in section_comment_tags]
-    comments = cleanup_comments(section_comment_list)
-    return comments
+    try:
+        # Updated class based on IMDb's current structure
+        section_comment_tags = soup.find_all('li', {'class': 'advisory-list__item'})
+        section_comment_list = [comment.text.strip() for comment in section_comment_tags]
+        comments = cleanup_comments(section_comment_list)
+        return comments
+    except Exception as e:
+        logger.error(f"Error in parse_section: {e}")
+        return ""
 
 def cleanup_comments(comments: List[str]) -> str:
     """Clean up and format comments."""
@@ -195,16 +202,19 @@ def scrape_movie(id: str) -> List[Any]:
     try:
         soup = get_soup(id)
         if soup:
-            soup_sections = soup.find('section', {'class': 'article listo content-advisories-index'})
+            # Update section class based on IMDb's current structure
+            soup_sections = soup.find('section', {'data-testid': 'advisory-categories'})
             if not soup_sections:
+                logger.warning(f"No parental guide sections found for ID {id}.")
                 return ["No parental guide available.", "Unknown Title", 0]
             
-            soup_nudity = soup_sections.find('section', {'id': 'advisory-nudity'})
-            soup_profanity = soup_sections.find('section', {'id': 'advisory-profanity'})
-            soup_violence = soup_sections.find('section', {'id': 'advisory-violence'})
-            soup_spoilers = soup_sections.find('section', {'id': 'advisory-spoilers'})
-            soup_frightening = soup_sections.find('section', {'id': 'advisory-frightening'})
-            soup_alcohol = soup_sections.find('section', {'id': 'advisory-alcohol'})
+            # Extract each advisory section
+            soup_nudity = soup_sections.find('section', {'data-testid': 'advisory-nudity'})
+            soup_profanity = soup_sections.find('section', {'data-testid': 'advisory-profanity'})
+            soup_violence = soup_sections.find('section', {'data-testid': 'advisory-violence'})
+            soup_spoilers = soup_sections.find('section', {'data-testid': 'advisory-spoilers'})
+            soup_frightening = soup_sections.find('section', {'data-testid': 'advisory-frightening'})
+            soup_alcohol = soup_sections.find('section', {'data-testid': 'advisory-alcohol'})
             
             nudity = parse_section(soup_nudity)
             profanity = parse_section(soup_profanity)
@@ -221,8 +231,20 @@ def scrape_movie(id: str) -> List[Any]:
             temp += display_section('alcohol', alcohol)
             temp += display_section('spoilers', spoilers)
             
+            # Improved title extraction
+            title = "Unknown Title"
             title_tag = soup.find('meta', {'property': 'og:title'})
-            title = title_tag['content'][:-7] if title_tag and 'content' in title_tag.attrs else "Unknown Title"
+            if title_tag and 'content' in title_tag.attrs:
+                title = title_tag['content'].replace(" Parental Guide | IMDb", "").strip()
+            else:
+                # Fallback to h1 tag
+                h1_tag = soup.find('h1')
+                if h1_tag:
+                    title = h1_tag.text.strip()
+                else:
+                    logger.warning(f"Title not found for ID {id}.")
+            
+            logger.info(f"Extracted title: {title}")
             
             # Calculate age rating
             age_rating = calculate_age_rating({
@@ -234,9 +256,11 @@ def scrape_movie(id: str) -> List[Any]:
                 'spoilers': spoilers
             })
             
+            logger.info(f"Calculated age rating for {title}: {age_rating}")
+            
             return [str(temp), title, age_rating]
     except Exception as e:
-        logger.error(f"Error in scrape_movie: {e}")
+        logger.error(f"Error in scrape_movie for ID {id}: {e}")
         return [str(e), "Unknown Title", 0]
 
 @cache.memoize(timeout=3600)
@@ -260,15 +284,24 @@ def getEpId(seriesID: str) -> Optional[str]:
             'scheme': 'https',
             'authority': 'www.imdb.com'
         }
-        req = requests.get(f"https://m.imdb.com/title/{series}/episodes/?season={season}", headers=headers)
+        req = requests.get(f"https://m.imdb.com/title/{series}/episodes/?season={season}", headers=headers, timeout=10)
+        req.raise_for_status()
         soup = BeautifulSoup(req.content, 'html5lib')
         eplist = soup.find('div', {'id': 'eplist'})
         if not eplist:
+            logger.warning(f"No episode list found for series ID {series}, season {season}.")
             return None
-        links = [element['href'] for element in eplist.find_all('a')]
-        return links[int(episode)-1].split('/')[2].split('?')[0]
+        links = [element['href'] for element in eplist.find_all('a', href=True)]
+        ep_link = links[int(episode)-1] if len(links) >= int(episode) else None
+        if ep_link:
+            ep_id = ep_link.split('/')[2].split('?')[0]
+            logger.info(f"Extracted episode ID: {ep_id} for series ID: {series}")
+            return ep_id
+        else:
+            logger.warning(f"Episode link not found for episode {episode} in series ID {series}.")
+            return None
     except Exception as e:
-        logger.error(f"Error in getEpId: {e}")
+        logger.error(f"Error in getEpId for seriesID {seriesID}: {e}")
         return None
 
 def respond_with(data: Any, status: int = 200):
@@ -458,7 +491,8 @@ def fetch_imdb_popular(content_type: str) -> List[Dict[str, str]]:
             'authority': 'www.imdb.com'
         }
         
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html5lib')
         
         items = []
@@ -474,6 +508,7 @@ def fetch_imdb_popular(content_type: str) -> List[Dict[str, str]]:
                     'title': name
                 })
         
+        logger.info(f"Fetched {len(items)} popular {content_type}s from IMDb.")
         return items
     except Exception as e:
         logger.error(f"Error fetching IMDb popular content: {e}")
@@ -494,7 +529,8 @@ def search_imdb(query: str, content_type: str) -> List[Dict[str, str]]:
             'authority': 'www.imdb.com'
         }
         
-        response = requests.get(search_url, headers=headers)
+        response = requests.get(search_url, headers=headers, timeout=10)
+        response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html5lib')
         
         items = []
@@ -502,14 +538,18 @@ def search_imdb(query: str, content_type: str) -> List[Dict[str, str]]:
         
         for result in results[:20]:  # Limit to first 20 results
             link = result.find('a')
-            if link:
+            if link and 'href' in link.attrs:
                 imdb_id = link['href'].split('/')[2]
-                title = result.find('td', class_='result_text').text.strip()
+                title_td = result.find('td', class_='result_text')
+                title = title_td.text.strip() if title_td else "Unknown Title"
+                # Clean title by removing extra info
+                title = re.sub(r'\(.*?\)', '', title).strip()
                 items.append({
                     'id': imdb_id,
                     'title': title
                 })
         
+        logger.info(f"Found {len(items)} search results for query '{query}' ({content_type}).")
         return items
     except Exception as e:
         logger.error(f"Error searching IMDb: {e}")
@@ -625,6 +665,7 @@ def test_endpoint():
         
         return respond_with(results)
     except Exception as e:
+        logger.error(f"Error in test_endpoint: {e}")
         return respond_with({
             'status': 'error',
             'error': str(e)
@@ -653,6 +694,7 @@ def test_movie(movie_id):
             }
         })
     except Exception as e:
+        logger.error(f"Error in test_movie: {e}")
         return respond_with({
             'status': 'error',
             'error': str(e)
