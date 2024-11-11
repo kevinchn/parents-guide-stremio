@@ -69,6 +69,56 @@ SEVERITY_KEYWORDS = {
     'strong': ['graphic', 'extreme', 'intense', 'explicit', 'severe']
 }
 
+# Mapping of country-specific ratings to numeric age values
+COUNTRY_RATING_MAP = {
+    "Australia": "M",
+    "Austria": "16",
+    "Brazil": "16",
+    "Canada": "14A",
+    "Chile": "14",
+    "China": "17",
+    "Finland": "K-16",
+    "Germany": "16",
+    "Hong Kong": "III",
+    "Ireland": "15A",
+    "Israel": "16",
+    "Lithuania": "N-16",
+    "Malaysia": "P16",
+    "Netherlands": "16",
+    "New Zealand": "M",
+    "Philippines": "R-16",
+    "Singapore": "M18",
+    "South Africa": "16",
+    "South Korea": "19",
+    "Spain": "16",
+    "Sweden": "15",
+    "Switzerland": "16",
+    "Taiwan": "15+",
+    "United Kingdom": "15",
+    "United States": "R",
+    "Vietnam": "T18"
+}
+
+RATING_NUMERIC_MAP = {
+    "M": 15,
+    "16": 16,
+    "14A": 14,
+    "14": 14,
+    "17": 17,
+    "K-16": 16,
+    "III": 18,
+    "15A": 15,
+    "N-16": 16,
+    "P16": 16,
+    "M18": 18,
+    "R-16": 16,
+    "19": 19,
+    "15": 15,
+    "15+": 15,
+    "R": 17,
+    "T18": 18
+}
+
 def determine_severity(content: str) -> str:
     """Determine content severity with more granular levels."""
     content_lower = content.lower()
@@ -87,20 +137,17 @@ def determine_severity(content: str) -> str:
     # Default to minimal if unclear
     return 'minimal'
 
-def calculate_age_rating(sections_data: Dict[str, str]) -> int:
-    """Calculate age rating with support for younger audiences."""
+def calculate_content_age_rating(sections_data: Dict[str, str]) -> int:
+    """Calculate age rating based on content categories."""
     score = 0
     
     for category, content in sections_data.items():
         if not content or category not in CONTENT_WEIGHTS or category == 'spoilers':
             continue
             
-        items = [item.strip() for item in content.split('*') if item.strip()]
-        
-        for item in items:
-            severity = determine_severity(item)
-            if isinstance(CONTENT_WEIGHTS[category], dict):
-                score += CONTENT_WEIGHTS[category].get(severity, 0)
+        severity = content  # Already normalized in parse_content_rating
+        if isinstance(CONTENT_WEIGHTS[category], dict):
+            score += CONTENT_WEIGHTS[category].get(severity, 0)
     
     # Enhanced thresholds with support for younger ages
     if score >= 15:
@@ -116,22 +163,39 @@ def calculate_age_rating(sections_data: Dict[str, str]) -> int:
     else:
         return 6  # Very mild content suitable for young children
 
-def get_rating_reasons(content: str) -> str:
+def calculate_age_certificates_rating(age_certificates: Dict[str, str]) -> Optional[int]:
+    """Calculate average age rating based on age certificates."""
+    numeric_ratings = []
+    for country, rating in age_certificates.items():
+        numeric = RATING_NUMERIC_MAP.get(rating)
+        if numeric:
+            numeric_ratings.append(numeric)
+        else:
+            logger.warning(f"No numeric mapping found for rating '{rating}' in country '{country}'.")
+    
+    if numeric_ratings:
+        average = sum(numeric_ratings) / len(numeric_ratings)
+        return round(average)
+    return None
+
+def get_combined_age_rating(content_age: int, certificates_age: Optional[int]) -> int:
+    """Combine content-based age rating and certificates-based age rating."""
+    if certificates_age:
+        combined = (content_age + certificates_age) / 2
+        return round(combined)
+    return content_age
+
+def get_rating_reasons(raw_ratings: Dict[str, Any]) -> str:
     """Extract key reasons for age rating with more detail."""
     reasons = []
     
-    for category in CONTENT_WEIGHTS.keys():
-        if category == 'spoilers':
+    content_categories = raw_ratings.get('content_categories', {})
+    
+    for category, severity in content_categories.items():
+        if category == 'mpa_rating':
             continue
-            
-        # Regex to extract content between category headers
-        pattern = f'\\[{category.upper()}\\](.*?)(?=\\[|$)'
-        match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
-        
-        if match and match.group(1).strip():
-            severity = determine_severity(match.group(1))
-            if severity != 'none':
-                reasons.append(f"{category.title()} ({severity})")
+        if severity != 'none':
+            reasons.append(f"{category.title()} ({severity})")
     
     return ', '.join(reasons) if reasons else 'Suitable for all ages'
 
@@ -169,26 +233,10 @@ def get_soup(id: str) -> Optional[BeautifulSoup]:
         return None
 
 def parse_content_rating(soup: BeautifulSoup) -> Dict[str, str]:
-    """Parse the content rating section to extract MPA rating and content categories."""
+    """Parse the content rating section to extract content categories."""
     try:
         # Initialize dictionary to hold categories
         categories = {}
-        
-        # Extract MPA Rating
-        mpa_rating_tag = soup.find('div', id="contentRating")
-        if mpa_rating_tag:
-            mpa_text = mpa_rating_tag.text.strip()
-            mpa_rating_match = re.search(r'Rated\s+(\w+)', mpa_text)
-            if mpa_rating_match:
-                mpa_rating = mpa_rating_match.group(1)
-                categories['mpa_rating'] = mpa_rating
-                logger.info(f"Extracted MPA Rating: {mpa_rating}")
-            else:
-                categories['mpa_rating'] = 'Unknown'
-                logger.warning("MPA Rating not found.")
-        else:
-            categories['mpa_rating'] = 'Unknown'
-            logger.warning("MPA Rating tag not found.")
         
         # Define content categories to extract
         content_categories = {
@@ -201,8 +249,10 @@ def parse_content_rating(soup: BeautifulSoup) -> Dict[str, str]:
 
         # Scrape each category's rating (e.g., mild, severe)
         for key, display_name in content_categories.items():
+            # Find the category label
             category_label = soup.find('a', string=re.compile(f'^{display_name}:', re.IGNORECASE))
             if category_label:
+                # The severity is likely in the next sibling element
                 severity_tag = category_label.find_next('div', class_='ipc-html-content-inner-div')
                 if severity_tag:
                     severity_text = severity_tag.text.strip().lower()
@@ -271,8 +321,8 @@ def scrape_movie(id: str) -> Dict[str, Any]:
         logger.debug(f"HTML Snippet for ID {id}:\n{snippet}")
         
         # Parse content ratings
-        sections_data = parse_content_rating(soup)
-        if not sections_data:
+        content_categories = parse_content_rating(soup)
+        if not content_categories:
             logger.warning(f"No content ratings found for ID {id}.")
         
         # Parse age certificates
@@ -295,18 +345,26 @@ def scrape_movie(id: str) -> Dict[str, Any]:
         
         logger.info(f"Extracted title: {title}")
         
-        # Calculate age rating
-        age_rating = calculate_age_rating(sections_data)
-        logger.info(f"Calculated age rating for {title}: {age_rating}")
+        # Calculate content-based age rating
+        content_age_rating = calculate_content_age_rating(content_categories)
+        logger.info(f"Content-based age rating for {title}: {content_age_rating}")
+        
+        # Calculate certificates-based age rating
+        certificates_age_rating = calculate_age_certificates_rating(age_certificates)
+        if certificates_age_rating:
+            logger.info(f"Certificates-based age rating for {title}: {certificates_age_rating}")
+        else:
+            logger.warning(f"No certificates-based age rating calculated for {title}.")
+        
+        # Combine both ratings into one average rating
+        combined_age_rating = get_combined_age_rating(content_age_rating, certificates_age_rating)
+        logger.info(f"Combined age rating for {title}: {combined_age_rating}")
         
         # Compile content description
         content_description = ""
-        for category, severity in sections_data.items():
-            if category == 'mpa_rating':
-                content_description += f"[MPA Rating]\nRated {severity}\n"
-            else:
-                formatted_category = category.replace('_', ' ').title()
-                content_description += f"[{formatted_category}]\n{severity.capitalize()}\n"
+        for category, severity in content_categories.items():
+            formatted_category = category.replace('_', ' ').title()
+            content_description += f"[{formatted_category}]\n{severity.capitalize()}\n"
         
         if age_certificates:
             content_description += "\n[Age Certificates]\n"
@@ -317,15 +375,15 @@ def scrape_movie(id: str) -> Dict[str, Any]:
         
         # Prepare raw ratings data
         raw_ratings = {
-            'mpa_rating': sections_data.get('mpa_rating', 'Unknown'),
-            'content_categories': {k: v for k, v in sections_data.items() if k != 'mpa_rating'},
+            'mpa_rating': 'Unknown',  # MPA Rating not scraped from parentalguide
+            'content_categories': content_categories,
             'age_certificates': age_certificates if age_certificates else {}
         }
         
         return {
             "content_description": content_description,
             "title": title,
-            "age_rating": age_rating,
+            "age_rating": combined_age_rating,
             "raw_ratings": raw_ratings
         }
     except Exception as e:
@@ -347,6 +405,9 @@ def getEpId(seriesID: str) -> Optional[str]:
     """Get episode ID for a series."""
     try:
         parts = seriesID.split('_')
+        if len(parts) < 3:
+            logger.error(f"Invalid series ID format: {seriesID}")
+            return None
         series, season, episode = parts[0], parts[-2], parts[-1]
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
@@ -459,7 +520,7 @@ def addon_meta(type, id):
             'name': title,
             'description': f"Parent's Guide:\n{content}",
             'ageRating': age_rating,
-            'ageRatingReason': get_rating_reasons(content),
+            'ageRatingReason': get_rating_reasons(raw_ratings),
             'raw_ratings': raw_ratings  # Include raw ratings data
         }
 
@@ -776,7 +837,7 @@ def test_movie(movie_id):
             'data': {
                 'title': title,
                 'age_rating': age_rating,
-                'rating_reasons': get_rating_reasons(content),
+                'rating_reasons': get_rating_reasons(raw_ratings),
                 'raw_ratings': raw_ratings,
                 'is_allowed': age_rating <= ALLOWED_AGE
             }
