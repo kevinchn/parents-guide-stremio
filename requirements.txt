@@ -1,5 +1,9 @@
-Flask==2.0.2
+flask==2.0.2
+beautifulsoup4==4.9.3
 requests==2.26.0
-beautifulsoup4==4.10.0
-html5lib
-gunicorn
+html5lib==1.1
+Flask-Caching==1.10.1
+gunicorn==20.1.0
+aiohttp==3.8.1
+python-dateutil==2.8.2
+typing-extensions==4.1.1
