@@ -597,8 +597,10 @@ def test_endpoint():
         }
         try:
             manifest = MANIFEST
+            if not manifest or 'version' not in manifest:
+                raise ValueError("Invalid manifest")
             manifest_test['status'] = 'passed'
-            manifest_test['details'] = 'Manifest available'
+            manifest_test['details'] = f"Manifest version: {manifest['version']}"
         except Exception as e:
             manifest_test['status'] = 'failed'
             manifest_test['error'] = str(e)
@@ -611,13 +613,14 @@ def test_endpoint():
         }
         try:
             data = scrape_movie('tt0910970')  # WALL-E
-            if len(data) >= 3:
+            if len(data) >= 3 and data[2] > 0:  # Check if age rating is valid
                 age_rating = data[2]
-                family_test['status'] = 'passed'
-                family_test['details'] = f'WALL-E age rating: {age_rating}'
+                title = data[1]
+                family_test['status'] = 'passed' if age_rating <= ALLOWED_AGE else 'failed'
+                family_test['details'] = f'{title} age rating: {age_rating}'
             else:
                 family_test['status'] = 'failed'
-                family_test['error'] = 'Insufficient data'
+                family_test['error'] = 'Invalid age rating'
         except Exception as e:
             family_test['status'] = 'failed'
             family_test['error'] = str(e)
@@ -630,13 +633,14 @@ def test_endpoint():
         }
         try:
             data = scrape_movie('tt0110912')  # Pulp Fiction
-            if len(data) >= 3:
+            if len(data) >= 3 and data[2] > 0:  # Check if age rating is valid
                 age_rating = data[2]
-                mature_test['status'] = 'passed'
-                mature_test['details'] = f'Pulp Fiction age rating: {age_rating}'
+                title = data[1]
+                mature_test['status'] = 'passed' if age_rating > ALLOWED_AGE else 'failed'
+                mature_test['details'] = f'{title} age rating: {age_rating}'
             else:
                 mature_test['status'] = 'failed'
-                mature_test['error'] = 'Insufficient data'
+                mature_test['error'] = 'Invalid age rating'
         except Exception as e:
             mature_test['status'] = 'failed'
             mature_test['error'] = str(e)
@@ -649,8 +653,10 @@ def test_endpoint():
         }
         try:
             items = search_imdb('disney', 'movie')
-            search_test['status'] = 'passed'
+            search_test['status'] = 'passed' if len(items) > 0 else 'failed'
             search_test['details'] = f'Found {len(items)} items'
+            if not items:
+                search_test['error'] = 'No search results found'
         except Exception as e:
             search_test['status'] = 'failed'
             search_test['error'] = str(e)
@@ -663,20 +669,79 @@ def test_endpoint():
         }
         try:
             items = fetch_imdb_popular('movie')
-            catalog_test['status'] = 'passed'
+            catalog_test['status'] = 'passed' if len(items) > 0 else 'failed'
             catalog_test['details'] = f'Found {len(items)} items'
+            if not items:
+                catalog_test['error'] = 'No catalog items found'
         except Exception as e:
             catalog_test['status'] = 'failed'
             catalog_test['error'] = str(e)
         results['tests'].append(catalog_test)
 
-        # Calculate overall status
+        # Calculate overall status - fail if any test failed
         failed_tests = [t for t in results['tests'] if t['status'] == 'failed']
         results['overall_status'] = 'failed' if failed_tests else 'passed'
         
         return respond_with(results)
     except Exception as e:
         logger.error(f"Error in test_endpoint: {e}")
+        return respond_with({
+            'status': 'error',
+            'error': str(e)
+        }, 500)
+
+@app.route('/test/<movie_id>')
+def test_movie(movie_id):
+    """Test endpoint for specific movie ID"""
+    try:
+        soup = get_soup(movie_id)
+        if not soup:
+            return respond_with({
+                'status': 'error',
+                'error': 'Failed to fetch movie data'
+            }, 400)
+
+        # Extract title
+        title = "Unknown Title"
+        title_tag = soup.find('meta', {'property': 'og:title'})
+        if title_tag and 'content' in title_tag.attrs:
+            title = title_tag['content'].replace(" Parental Guide | IMDb", "").strip()
+        else:
+            h1_tag = soup.find('h1')
+            if h1_tag:
+                title = h1_tag.text.strip()
+
+        # Parse content ratings
+        sections_data = parse_content_rating(soup)
+        if not sections_data:
+            return respond_with({
+                'status': 'error',
+                'error': 'No content ratings found'
+            }, 400)
+
+        # Calculate age rating
+        age_rating = calculate_age_rating(sections_data)
+
+        # Get rating reasons
+        reasons = []
+        for category, severity in sections_data.items():
+            if category != 'mpa_rating' and severity != 'none':
+                reasons.append(f"{category.replace('_', ' ').title()} ({severity})")
+
+        rating_reasons = ', '.join(reasons) if reasons else 'Suitable for all ages'
+            
+        return respond_with({
+            'status': 'success',
+            'data': {
+                'title': title,
+                'age_rating': age_rating,
+                'is_allowed': age_rating <= ALLOWED_AGE,
+                'rating_reasons': rating_reasons,
+                'raw_ratings': sections_data
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error in test_movie: {e}")
         return respond_with({
             'status': 'error',
             'error': str(e)
@@ -740,6 +805,7 @@ def test_page():
                 border-radius: 3px;
                 color: white;
                 font-size: 14px;
+                margin-left: 8px;
             }
             .passed { background: #4caf50; }
             .failed { background: #f44336; }
@@ -760,9 +826,34 @@ def test_page():
                 margin-right: 10px;
                 border: 1px solid #ddd;
                 border-radius: 4px;
+                width: 200px;
             }
             #testResults, #movieResults {
                 margin-top: 20px;
+            }
+            .rating-info {
+                display: flex;
+                gap: 10px;
+                align-items: center;
+                margin: 10px 0;
+            }
+            .rating-badge {
+                font-size: 24px;
+                font-weight: bold;
+                padding: 8px 16px;
+                border-radius: 4px;
+                color: white;
+            }
+            .allowed { background: #4caf50; }
+            .blocked { background: #f44336; }
+            .error { color: #f44336; }
+            .raw-data {
+                background: #f5f5f5;
+                padding: 10px;
+                border-radius: 4px;
+                margin-top: 10px;
+                font-family: monospace;
+                white-space: pre-wrap;
             }
         </style>
     </head>
@@ -773,7 +864,7 @@ def test_page():
             <h3>Configuration</h3>
             <p>Allowed Age: <strong id="allowedAge">Loading...</strong></p>
         </div>
-
+    
         <div class="test-card">
             <h3>Run Tests</h3>
             <button onclick="runTests()">Run All Tests</button>
@@ -781,7 +872,7 @@ def test_page():
                 <!-- Test results will appear here -->
             </div>
         </div>
-
+    
         <div class="test-card">
             <h3>Test Specific Movie</h3>
             <input type="text" id="movieId" class="movie-input" placeholder="Enter IMDb ID (e.g., tt0910970)">
@@ -790,7 +881,7 @@ def test_page():
                 <!-- Movie test results will appear here -->
             </div>
         </div>
-
+    
         <script>
             function runTests() {
                 document.getElementById('testResults').innerHTML = '<p>Running tests...</p>';
@@ -808,27 +899,36 @@ def test_page():
                                     <p>Status: <span class="status ${test.status}">${test.status}</span></p>
                                     <p>Endpoint: ${test.endpoint}</p>
                                     ${test.details ? `<p>Details: ${test.details}</p>` : ''}
-                                    ${test.error ? `<p>Error: ${test.error}</p>` : ''}
+                                    ${test.error ? `<p class="error">Error: ${test.error}</p>` : ''}
                                 </div>
                             `;
                         });
                         
-                        html += `<p><strong>Overall Status:</strong> ${data.overall_status}</p>`;
+                        html += `
+                            <div class="test-card">
+                                <h4>Overall Status</h4>
+                                <p><span class="status ${data.overall_status}">${data.overall_status}</span></p>
+                            </div>
+                        `;
                         
                         document.getElementById('testResults').innerHTML = html;
                     })
                     .catch(error => {
-                        document.getElementById('testResults').innerHTML = `<p>Error: ${error}</p>`;
+                        document.getElementById('testResults').innerHTML = `
+                            <div class="test-card">
+                                <p class="error">Error: ${error}</p>
+                            </div>
+                        `;
                     });
             }
-
+    
             function testMovie() {
                 const movieId = document.getElementById('movieId').value;
                 if (!movieId) {
                     alert('Please enter an IMDb ID');
                     return;
                 }
-
+    
                 document.getElementById('movieResults').innerHTML = '<p>Testing movie...</p>';
                 
                 fetch(`/test/${movieId}`)
@@ -838,29 +938,37 @@ def test_page():
                             let html = `
                                 <div class="test-card">
                                     <h4>${data.data.title}</h4>
-                                    <p>Age Rating: <span class="status ${data.data.is_allowed ? 'passed' : 'failed'}">
-                                        ${data.data.age_rating}+
-                                    </span></p>
-                                    <p>Allowed: ${data.data.is_allowed ? 'Yes' : 'No'}</p>
-                                    <p>Rating Reasons: ${data.data.rating_reasons}</p>
+                                    <div class="rating-info">
+                                        <span class="rating-badge ${data.data.is_allowed ? 'allowed' : 'blocked'}">
+                                            ${data.data.age_rating}+
+                                        </span>
+                                        <span>${data.data.is_allowed ? 'Allowed' : 'Blocked'}</span>
+                                    </div>
+                                    <p><strong>Rating Reasons:</strong> ${data.data.rating_reasons}</p>
+                                    <details>
+                                        <summary>Raw Rating Data</summary>
+                                        <div class="raw-data">${JSON.stringify(data.data.raw_ratings, null, 2)}</div>
+                                    </details>
                                 </div>
                             `;
                             document.getElementById('movieResults').innerHTML = html;
                         } else {
-                            let html = `
+                            document.getElementById('movieResults').innerHTML = `
                                 <div class="test-card">
-                                    <h4>Error</h4>
-                                    <p>${data.error}</p>
+                                    <p class="error">Error: ${data.error}</p>
                                 </div>
                             `;
-                            document.getElementById('movieResults').innerHTML = html;
                         }
                     })
                     .catch(error => {
-                        document.getElementById('movieResults').innerHTML = `<p>Error: ${error}</p>`;
+                        document.getElementById('movieResults').innerHTML = `
+                            <div class="test-card">
+                                <p class="error">Error: ${error}</p>
+                            </div>
+                        `;
                     });
             }
-
+    
             // Run tests on page load
             runTests();
         </script>
