@@ -16,6 +16,15 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Configure file logging with rotation
+from logging.handlers import RotatingFileHandler
+
+handler = RotatingFileHandler('addon.log', maxBytes=1000000, backupCount=5)
+handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
 # Configure cache (using simple cache for Vercel compatibility)
 cache = Cache(app, config={'CACHE_TYPE': 'simple'})
 
@@ -458,6 +467,7 @@ def respond_with(data: Any, status: int = 200):
     resp.headers['Access-Control-Allow-Origin'] = '*'
     resp.headers['Access-Control-Allow-Headers'] = '*'
     resp.headers['Cache-Control'] = 'public, max-age=40000'
+    resp.headers['Content-Type'] = 'application/json'
     return resp, status
 
 # Define the manifest
@@ -719,6 +729,17 @@ def not_found(error):
 def server_error(error):
     return respond_with({'error': 'Internal server error'}, 500)
 
+# New Route for Fetching Logs
+@app.route('/logs')
+def fetch_logs():
+    try:
+        with open('addon.log', 'r') as log_file:
+            logs = log_file.read()
+        return respond_with({'logs': logs})
+    except Exception as e:
+        logger.error(f"Error fetching logs: {e}")
+        return respond_with({'error': 'Unable to fetch logs.'}, 500)
+
 # Test Routes
 
 @app.route('/test')
@@ -735,15 +756,15 @@ def test_endpoint():
         test_movies = [
             {'id': 'tt0111161', 'title': 'The Shawshank Redemption', 'expected_age': 15},
             {'id': 'tt0068646', 'title': 'The Godfather', 'expected_age': 18},
-            {'id': 'tt0108052', 'title': 'Schindler\'s List', 'expected_age': 16},
+            {'id': 'tt0108052', 'title': "Schindler's List", 'expected_age': 16},
             {'id': 'tt1375666', 'title': 'Inception', 'expected_age': 13},
             {'id': 'tt0468569', 'title': 'The Dark Knight', 'expected_age': 13},
             {'id': 'tt0816692', 'title': 'Interstellar', 'expected_age': 13},
             {'id': 'tt0109830', 'title': 'Forrest Gump', 'expected_age': 10},
             {'id': 'tt0137523', 'title': 'Fight Club', 'expected_age': 18},
             {'id': 'tt0167260', 'title': 'The Lord of the Rings: The Return of the King', 'expected_age': 13},
-            {'id': 'tt0110912', 'title': 'Pulp Fiction', 'expected_age': 17},  # Updated expected age
-            {'id': 'tt1375666', 'title': 'Gladiator II', 'expected_age': 16},  # New test movie
+            {'id': 'tt0110912', 'title': 'Pulp Fiction', 'expected_age': 17},
+            {'id': 'tt1371734', 'title': 'Gladiator II', 'expected_age': 16},  # Unique ID
             {'id': 'tt0910970', 'title': 'WALL·E', 'expected_age': 6},
         ]
         
@@ -1012,7 +1033,12 @@ def test_page():
                 document.getElementById('testResults').innerHTML = '<p>Running tests...</p>';
                 
                 fetch('/test')
-                    .then(response => response.json())
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`Server error: ${response.statusText}`);
+                        }
+                        return response.json();
+                    })
                     .then(data => {
                         document.getElementById('allowedAge').textContent = data.allowed_age;
                         
@@ -1041,9 +1067,10 @@ def test_page():
                     .catch(error => {
                         document.getElementById('testResults').innerHTML = `
                             <div class="test-card">
-                                <p class="error">Error: ${error}</p>
+                                <p class="error">Error: ${error.message}</p>
                             </div>
                         `;
+                        console.error('Test Endpoint Error:', error);
                     });
             }
     
@@ -1057,7 +1084,14 @@ def test_page():
                 document.getElementById('movieResults').innerHTML = '<p>Testing movie/series...</p>';
                 
                 fetch(`/test/${movieId}`)
-                    .then(response => response.json())
+                    .then(response => {
+                        if (!response.ok) {
+                            return response.json().then(data => {
+                                throw new Error(data.error || 'Unknown error');
+                            });
+                        }
+                        return response.json();
+                    })
                     .then(data => {
                         if (data.status === 'success') {
                             let html = `
@@ -1088,21 +1122,33 @@ def test_page():
                     .catch(error => {
                         document.getElementById('movieResults').innerHTML = `
                             <div class="test-card">
-                                <p class="error">Error: ${error}</p>
+                                <p class="error">Error: ${error.message}</p>
                             </div>
                         `;
+                        console.error('Test Movie Error:', error);
                     });
             }
             
             function fetchLogs() {
-                // For advanced debugging, implement a server-side route to fetch logs
-                // This requires setting up log storage, which is beyond the current scope
-                // Placeholder for future implementation
-                document.getElementById('debugLogs').innerHTML = `
-                    <p>Advanced debugging logs are not yet implemented.</p>
-                `;
+                fetch('/logs')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.logs) {
+                            document.getElementById('debugLogs').innerText = data.logs;
+                        } else if (data.error) {
+                            document.getElementById('debugLogs').innerHTML = `<p class="error">${data.error}</p>`;
+                        }
+                    })
+                    .catch(error => {
+                        document.getElementById('debugLogs').innerHTML = `
+                            <div class="test-card">
+                                <p class="error">Error: ${error.message}</p>
+                            </div>
+                        `;
+                        console.error('Fetch Logs Error:', error);
+                    });
             }
-    
+
             // Run tests on page load
             window.onload = runTests;
         </script>
