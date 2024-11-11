@@ -315,6 +315,7 @@ MANIFEST = {
     ]
 }
 
+# Routes
 @app.route('/')
 def root():
     return respond_with({'status': 'working'})
@@ -526,9 +527,294 @@ def not_found(error):
 def server_error(error):
     return respond_with({'error': 'Internal server error'}, 500)
 
-#if __name__ == '__main__':
-#    port = int(os.environ.get('PORT', 8080))
-#    app.run(host='0.0.0.0', port=port)
+# Test Routes
+
+@app.route('/test')
+def test_endpoint():
+    """Test endpoint that checks basic functionality"""
+    try:
+        results = {
+            'status': 'running',
+            'allowed_age': ALLOWED_AGE,
+            'tests': []
+        }
+        
+        # Test 1: Manifest
+        manifest_test = {
+            'name': 'Manifest Check',
+            'endpoint': '/manifest.json'
+        }
+        try:
+            manifest = MANIFEST
+            manifest_test['status'] = 'passed'
+            manifest_test['details'] = 'Manifest available'
+        except Exception as e:
+            manifest_test['status'] = 'failed'
+            manifest_test['error'] = str(e)
+        results['tests'].append(manifest_test)
+
+        # Test 2: Age-appropriate content (WALL-E)
+        family_test = {
+            'name': 'Family Content Check',
+            'endpoint': '/meta/movie/gpg-tt0910970'
+        }
+        try:
+            data = scrape_movie('tt0910970')  # WALL-E
+            if len(data) >= 3:
+                age_rating = data[2]
+                family_test['status'] = 'passed'
+                family_test['details'] = f'WALL-E age rating: {age_rating}'
+            else:
+                family_test['status'] = 'failed'
+                family_test['error'] = 'Insufficient data'
+        except Exception as e:
+            family_test['status'] = 'failed'
+            family_test['error'] = str(e)
+        results['tests'].append(family_test)
+
+        # Test 3: Mature content (Pulp Fiction)
+        mature_test = {
+            'name': 'Mature Content Check',
+            'endpoint': '/meta/movie/gpg-tt0110912'
+        }
+        try:
+            data = scrape_movie('tt0110912')  # Pulp Fiction
+            if len(data) >= 3:
+                age_rating = data[2]
+                mature_test['status'] = 'passed'
+                mature_test['details'] = f'Pulp Fiction age rating: {age_rating}'
+            else:
+                mature_test['status'] = 'failed'
+                mature_test['error'] = 'Insufficient data'
+        except Exception as e:
+            mature_test['status'] = 'failed'
+            mature_test['error'] = str(e)
+        results['tests'].append(mature_test)
+
+        # Test 4: Search functionality
+        search_test = {
+            'name': 'Search Function Check',
+            'endpoint': '/catalog/movie/gpg_search_movie?query=disney'
+        }
+        try:
+            items = search_imdb('disney', 'movie')
+            search_test['status'] = 'passed'
+            search_test['details'] = f'Found {len(items)} items'
+        except Exception as e:
+            search_test['status'] = 'failed'
+            search_test['error'] = str(e)
+        results['tests'].append(search_test)
+
+        # Test 5: Catalog functionality
+        catalog_test = {
+            'name': 'Catalog Function Check',
+            'endpoint': '/catalog/movie/gpg_movies_catalog'
+        }
+        try:
+            items = fetch_imdb_popular('movie')
+            catalog_test['status'] = 'passed'
+            catalog_test['details'] = f'Found {len(items)} items'
+        except Exception as e:
+            catalog_test['status'] = 'failed'
+            catalog_test['error'] = str(e)
+        results['tests'].append(catalog_test)
+
+        # Calculate overall status
+        failed_tests = [t for t in results['tests'] if t['status'] == 'failed']
+        results['overall_status'] = 'failed' if failed_tests else 'passed'
+        
+        return respond_with(results)
+    except Exception as e:
+        return respond_with({
+            'status': 'error',
+            'error': str(e)
+        }, 500)
+
+@app.route('/test/<movie_id>')
+def test_movie(movie_id):
+    """Test endpoint for specific movie ID"""
+    try:
+        data = scrape_movie(movie_id)
+        if len(data) < 3:
+            return respond_with({
+                'status': 'error',
+                'error': 'Insufficient data'
+            }, 400)
+            
+        content, title, age_rating = data
+        
+        return respond_with({
+            'status': 'success',
+            'data': {
+                'title': title,
+                'age_rating': age_rating,
+                'rating_reasons': get_rating_reasons(content),
+                'is_allowed': age_rating <= ALLOWED_AGE
+            }
+        })
+    except Exception as e:
+        return respond_with({
+            'status': 'error',
+            'error': str(e)
+        }, 500)
+
+@app.route('/test-page')
+def test_page():
+    """HTML page for testing the addon"""
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Stremio Parents Guide Addon - Test Dashboard</title>
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 20px auto;
+                padding: 0 20px;
+                background: #f5f5f5;
+            }
+            .test-card {
+                background: white;
+                padding: 15px;
+                margin: 10px 0;
+                border-radius: 5px;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            .status {
+                display: inline-block;
+                padding: 3px 8px;
+                border-radius: 3px;
+                color: white;
+                font-size: 14px;
+            }
+            .passed { background: #4caf50; }
+            .failed { background: #f44336; }
+            .loading { background: #2196f3; }
+            button {
+                background: #2196f3;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 5px;
+                cursor: pointer;
+            }
+            button:hover {
+                background: #1976d2;
+            }
+            .movie-input {
+                padding: 8px;
+                margin-right: 10px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+            #testResults, #movieResults {
+                margin-top: 20px;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Stremio Parents Guide Addon - Test Dashboard</h1>
+        
+        <div class="test-card">
+            <h3>Configuration</h3>
+            <p>Allowed Age: <strong id="allowedAge">Loading...</strong></p>
+        </div>
+
+        <div class="test-card">
+            <h3>Run Tests</h3>
+            <button onclick="runTests()">Run All Tests</button>
+            <div id="testResults">
+                <!-- Test results will appear here -->
+            </div>
+        </div>
+
+        <div class="test-card">
+            <h3>Test Specific Movie</h3>
+            <input type="text" id="movieId" class="movie-input" placeholder="Enter IMDb ID (e.g., tt0910970)">
+            <button onclick="testMovie()">Test Movie</button>
+            <div id="movieResults">
+                <!-- Movie test results will appear here -->
+            </div>
+        </div>
+
+        <script>
+            function runTests() {
+                document.getElementById('testResults').innerHTML = '<p>Running tests...</p>';
+                
+                fetch('/test')
+                    .then(response => response.json())
+                    .then(data => {
+                        document.getElementById('allowedAge').textContent = data.allowed_age;
+                        
+                        let html = '<h4>Test Results:</h4>';
+                        data.tests.forEach(test => {
+                            html += `
+                                <div class="test-card">
+                                    <h4>${test.name}</h4>
+                                    <p>Status: <span class="status ${test.status}">${test.status}</span></p>
+                                    <p>Endpoint: ${test.endpoint}</p>
+                                    ${test.details ? `<p>Details: ${test.details}</p>` : ''}
+                                    ${test.error ? `<p>Error: ${test.error}</p>` : ''}
+                                </div>
+                            `;
+                        });
+                        
+                        html += `<p><strong>Overall Status:</strong> ${data.overall_status}</p>`;
+                        
+                        document.getElementById('testResults').innerHTML = html;
+                    })
+                    .catch(error => {
+                        document.getElementById('testResults').innerHTML = `<p>Error: ${error}</p>`;
+                    });
+            }
+
+            function testMovie() {
+                const movieId = document.getElementById('movieId').value;
+                if (!movieId) {
+                    alert('Please enter an IMDb ID');
+                    return;
+                }
+
+                document.getElementById('movieResults').innerHTML = '<p>Testing movie...</p>';
+                
+                fetch(`/test/${movieId}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.status === 'success') {
+                            let html = `
+                                <div class="test-card">
+                                    <h4>${data.data.title}</h4>
+                                    <p>Age Rating: <span class="status ${data.data.is_allowed ? 'passed' : 'failed'}">
+                                        ${data.data.age_rating}+
+                                    </span></p>
+                                    <p>Allowed: ${data.data.is_allowed ? 'Yes' : 'No'}</p>
+                                    <p>Rating Reasons: ${data.data.rating_reasons}</p>
+                                </div>
+                            `;
+                            document.getElementById('movieResults').innerHTML = html;
+                        } else {
+                            let html = `
+                                <div class="test-card">
+                                    <h4>Error</h4>
+                                    <p>${data.error}</p>
+                                </div>
+                            `;
+                            document.getElementById('movieResults').innerHTML = html;
+                        }
+                    })
+                    .catch(error => {
+                        document.getElementById('movieResults').innerHTML = `<p>Error: ${error}</p>`;
+                    });
+            }
+
+            // Run tests on page load
+            runTests();
+        </script>
+    </body>
+    </html>
+    """
+    return html
 
 if __name__ == '__main__':
     app.run()
