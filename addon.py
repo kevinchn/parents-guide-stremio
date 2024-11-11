@@ -147,7 +147,7 @@ def format_season_episode(id: str) -> str:
         return "S00E00"
 
 def get_soup(id: str) -> Optional[BeautifulSoup]:
-    """Get BeautifulSoup object for IMDB page."""
+    """Get BeautifulSoup object for IMDb parental guide page."""
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
@@ -165,73 +165,83 @@ def get_soup(id: str) -> Optional[BeautifulSoup]:
         logger.error(f"Error in get_soup for ID {id}: {e}")
         return None
 
-def parse_section(soup: Optional[BeautifulSoup]) -> str:
-    """Parse a content section."""
-    if not soup:
-        return ""
+def parse_content_rating(soup: BeautifulSoup) -> Dict[str, str]:
+    """Parse the content rating section to extract MPA rating and content categories."""
     try:
-        # Updated class based on IMDb's current structure
-        section_comment_tags = soup.find_all('li', {'class': 'advisory-list__item'})
-        section_comment_list = [comment.text.strip() for comment in section_comment_tags]
-        comments = cleanup_comments(section_comment_list)
-        return comments
+        # Find the Content Rating section
+        content_rating_section = soup.find('section', string=re.compile('Content rating', re.IGNORECASE))
+        if not content_rating_section:
+            # Alternative method if section is not found by string
+            content_rating_section = soup.find('section', {'id': 'certifications'})
+            if not content_rating_section:
+                logger.warning("Content Rating section not found.")
+                return {}
+        
+        # Initialize dictionary to hold categories
+        categories = {}
+        
+        # Extract MPA rating
+        mpa_rating_tag = soup.find('span', string=re.compile('Motion Picture Rating', re.IGNORECASE))
+        if mpa_rating_tag:
+            mpa_text = mpa_rating_tag.find_next('span').text.strip()
+            # Extract rating (e.g., 'R')
+            mpa_rating = re.findall(r'Rated (\w+)', mpa_text)
+            if mpa_rating:
+                categories['mpa_rating'] = mpa_rating[0]
+                logger.info(f"Extracted MPA Rating: {mpa_rating[0]}")
+            else:
+                categories['mpa_rating'] = 'Unknown'
+                logger.warning("MPA Rating not found.")
+        else:
+            categories['mpa_rating'] = 'Unknown'
+            logger.warning("MPA Rating tag not found.")
+        
+        # Extract individual content categories
+        content_categories = ['Sex & Nudity', 'Violence & Gore', 'Profanity', 'Alcohol, Drugs & Smoking', 'Frightening & Intense Scenes']
+        for category in content_categories:
+            category_tag = soup.find('span', string=re.compile(category, re.IGNORECASE))
+            if category_tag:
+                # The severity is in the next sibling
+                severity_tag = category_tag.find_next('span')
+                if severity_tag:
+                    severity = severity_tag.text.strip().lower()
+                    # Normalize severity to match our keywords
+                    if 'severe' in severity:
+                        normalized_severity = 'strong'
+                    elif 'strong' in severity:
+                        normalized_severity = 'strong'
+                    elif 'moderate' in severity:
+                        normalized_severity = 'moderate'
+                    elif 'mild' in severity:
+                        normalized_severity = 'mild'
+                    elif 'minimal' in severity or 'very mild' in severity:
+                        normalized_severity = 'minimal'
+                    else:
+                        normalized_severity = 'none'
+                    
+                    categories[category.lower().replace(' & ', '').replace(',', '').replace(' ', '_')] = normalized_severity
+                    logger.info(f"Extracted {category}: {normalized_severity}")
+            else:
+                categories[category.lower().replace(' & ', '').replace(',', '').replace(' ', '_')] = 'none'
+                logger.info(f"{category} not found, defaulting to 'none'")
+        
+        return categories
     except Exception as e:
-        logger.error(f"Error in parse_section: {e}")
-        return ""
+        logger.error(f"Error in parse_content_rating: {e}")
+        return {}
 
-def cleanup_comments(comments: List[str]) -> str:
-    """Clean up and format comments."""
-    clean_comments = []
-    if comments:
-        for comment in comments:
-            cleaned_up = sub(r'\n\n {8}\n {8}\n {12}\n {16}\n {16}\n {12}\nEdit', '', comment)
-            clean_comments.append('* ' + cleaned_up)
-    return "\n".join(clean_comments)
-
-def display_section(title: str, category: str) -> str:
-    """Format a content section."""
-    temp = ""
-    if category:
-        temp += f'\n[{title.upper()}]'
-        temp += f'\n{category}\n'
-    return temp
-
-@cache.memoize(timeout=3600)
 def scrape_movie(id: str) -> List[Any]:
     """Scrape movie/series content advisory information."""
     try:
         soup = get_soup(id)
         if soup:
-            # Update section class based on IMDb's current structure
-            soup_sections = soup.find('section', {'data-testid': 'advisory-categories'})
-            if not soup_sections:
-                logger.warning(f"No parental guide sections found for ID {id}.")
+            # Parse content ratings
+            sections_data = parse_content_rating(soup)
+            if not sections_data:
+                logger.warning(f"No content ratings found for ID {id}.")
                 return ["No parental guide available.", "Unknown Title", 0]
             
-            # Extract each advisory section
-            soup_nudity = soup_sections.find('section', {'data-testid': 'advisory-nudity'})
-            soup_profanity = soup_sections.find('section', {'data-testid': 'advisory-profanity'})
-            soup_violence = soup_sections.find('section', {'data-testid': 'advisory-violence'})
-            soup_spoilers = soup_sections.find('section', {'data-testid': 'advisory-spoilers'})
-            soup_frightening = soup_sections.find('section', {'data-testid': 'advisory-frightening'})
-            soup_alcohol = soup_sections.find('section', {'data-testid': 'advisory-alcohol'})
-            
-            nudity = parse_section(soup_nudity)
-            profanity = parse_section(soup_profanity)
-            violence = parse_section(soup_violence)
-            spoilers = parse_section(soup_spoilers)
-            frightening = parse_section(soup_frightening)
-            alcohol = parse_section(soup_alcohol)
-            
-            temp = ""
-            temp += display_section('nudity', nudity)
-            temp += display_section('profanity', profanity)
-            temp += display_section('violence', violence)
-            temp += display_section('frightening', frightening)
-            temp += display_section('alcohol', alcohol)
-            temp += display_section('spoilers', spoilers)
-            
-            # Improved title extraction
+            # Extract title
             title = "Unknown Title"
             title_tag = soup.find('meta', {'property': 'og:title'})
             if title_tag and 'content' in title_tag.attrs:
@@ -247,18 +257,19 @@ def scrape_movie(id: str) -> List[Any]:
             logger.info(f"Extracted title: {title}")
             
             # Calculate age rating
-            age_rating = calculate_age_rating({
-                'nudity': nudity,
-                'profanity': profanity,
-                'violence': violence,
-                'frightening': frightening,
-                'alcohol': alcohol,
-                'spoilers': spoilers
-            })
-            
+            age_rating = calculate_age_rating(sections_data)
             logger.info(f"Calculated age rating for {title}: {age_rating}")
             
-            return [str(temp), title, age_rating]
+            # Compile content description
+            content_description = ""
+            for category, severity in sections_data.items():
+                if category == 'mpa_rating':
+                    content_description += f"[MPA Rating]\nRated {severity}\n"
+                elif category != 'mpa_rating':
+                    formatted_category = category.replace('_', ' ').title()
+                    content_description += f"[{formatted_category}]\n{severity.capitalize()}\n"
+            
+            return [str(content_description), title, age_rating]
     except Exception as e:
         logger.error(f"Error in scrape_movie for ID {id}: {e}")
         return [str(e), "Unknown Title", 0]
@@ -284,21 +295,21 @@ def getEpId(seriesID: str) -> Optional[str]:
             'scheme': 'https',
             'authority': 'www.imdb.com'
         }
-        req = requests.get(f"https://m.imdb.com/title/{series}/episodes/?season={season}", headers=headers, timeout=10)
+        req = requests.get(f"https://www.imdb.com/title/{series}/episodes/?season={season}", headers=headers, timeout=10)
         req.raise_for_status()
         soup = BeautifulSoup(req.content, 'html5lib')
-        eplist = soup.find('div', {'id': 'eplist'})
+        eplist = soup.find('div', {'id': 'episodes_content'})
         if not eplist:
             logger.warning(f"No episode list found for series ID {series}, season {season}.")
             return None
-        links = [element['href'] for element in eplist.find_all('a', href=True)]
-        ep_link = links[int(episode)-1] if len(links) >= int(episode) else None
-        if ep_link:
-            ep_id = ep_link.split('/')[2].split('?')[0]
+        links = [element['href'] for element in eplist.find_all('a', href=True) if '/title/' in element['href']]
+        if int(episode) - 1 < len(links):
+            ep_link = links[int(episode)-1]
+            ep_id = ep_link.split('/')[2]
             logger.info(f"Extracted episode ID: {ep_id} for series ID: {series}")
             return ep_id
         else:
-            logger.warning(f"Episode link not found for episode {episode} in series ID {series}.")
+            logger.warning(f"Episode {episode} out of range for series ID {series}.")
             return None
     except Exception as e:
         logger.error(f"Error in getEpId for seriesID {seriesID}: {e}")
@@ -500,7 +511,7 @@ def fetch_imdb_popular(content_type: str) -> List[Dict[str, str]]:
         
         for title in titles[:50]:  # Limit to top 50
             link = title.find('a')
-            if link:
+            if link and 'href' in link.attrs:
                 imdb_id = link['href'].split('/')[2]  # Extract IMDb ID
                 name = link.text.strip()
                 items.append({
