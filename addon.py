@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 cache = Cache(app, config={'CACHE_TYPE': 'simple'})
 
 # Configuration
-ALLOWED_AGE = int(os.getenv('ALLOWED_AGE', 18))
+ALLOWED_AGE = int(os.getenv('ALLOWED_AGE', 13))  # Updated to a more realistic default
 CONTENT_WEIGHTS = {
     'nudity': {
         'none': 0,     # No nudity
@@ -99,24 +99,24 @@ COUNTRY_RATING_MAP = {
     "Vietnam": "T18"
 }
 
+# Mapping of country-specific ratings to numeric age values
+# Including both numeric and letter-based ratings
 RATING_NUMERIC_MAP = {
-    "M": 15,
-    "16": 16,
-    "14A": 14,
-    "14": 14,
-    "17": 17,
-    "K-16": 16,
-    "III": 18,
-    "15A": 15,
-    "N-16": 16,
-    "P16": 16,
-    "M18": 18,
-    "R-16": 16,
-    "19": 19,
-    "15": 15,
-    "15+": 15,
-    "R": 17,
-    "T18": 18
+    "M": 15,      # Australia
+    "16": 16,     # Austria, Brazil, Germany, etc.
+    "14A": 14,    # Canada, Ireland
+    "14": 14,     # Chile
+    "17": 17,     # China
+    "K-16": 16,   # Finland, Lithuania
+    "III": 18,    # Hong Kong
+    "P16": 16,    # Malaysia
+    "M18": 18,    # Singapore
+    "R-16": 16,   # Philippines
+    "19": 19,     # South Korea
+    "15": 15,     # Sweden, Taiwan, United Kingdom
+    "15+": 15,    # Taiwan
+    "R": 17,      # United States
+    "T18": 18     # Vietnam
 }
 
 def determine_severity(content: str) -> str:
@@ -137,15 +137,27 @@ def determine_severity(content: str) -> str:
     # Default to minimal if unclear
     return 'minimal'
 
+def extract_numeric_rating(rating: str) -> Optional[int]:
+    """Extract numeric value from rating string."""
+    if not rating:
+        return None
+    # Attempt to find all digits in the rating
+    digits = re.findall(r'\d+', rating)
+    if digits:
+        # Convert the first occurrence to integer
+        return int(digits[0])
+    else:
+        # Handle letter-based ratings
+        return RATING_NUMERIC_MAP.get(rating, None)
+
 def calculate_content_age_rating(sections_data: Dict[str, str]) -> int:
     """Calculate age rating based on content categories."""
     score = 0
     
-    for category, content in sections_data.items():
-        if not content or category not in CONTENT_WEIGHTS or category == 'spoilers':
+    for category, severity in sections_data.items():
+        if not severity or category not in CONTENT_WEIGHTS or category == 'spoilers':
             continue
             
-        severity = content  # Already normalized in parse_content_rating
         if isinstance(CONTENT_WEIGHTS[category], dict):
             score += CONTENT_WEIGHTS[category].get(severity, 0)
     
@@ -167,7 +179,7 @@ def calculate_age_certificates_rating(age_certificates: Dict[str, str]) -> Optio
     """Calculate average age rating based on age certificates."""
     numeric_ratings = []
     for country, rating in age_certificates.items():
-        numeric = RATING_NUMERIC_MAP.get(rating)
+        numeric = extract_numeric_rating(rating)
         if numeric:
             numeric_ratings.append(numeric)
         else:
@@ -203,6 +215,9 @@ def format_season_episode(id: str) -> str:
     """Format season and episode numbers."""
     try:
         parts = id.split('_')
+        if len(parts) < 3:
+            logger.error(f"Invalid series ID format: {id}")
+            return "S00E00"
         season = parts[-2].zfill(2)
         episode = parts[-1].split('-')[0].zfill(2)
         return f"S{season}E{episode}"
