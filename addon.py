@@ -149,6 +149,9 @@ def format_season_episode(id: str) -> str:
 def get_soup(id: str) -> Optional[BeautifulSoup]:
     """Get BeautifulSoup object for IMDb parental guide page."""
     try:
+        # Construct the full URL with query and fragment
+        url = f'https://www.imdb.com/title/{id}/parentalguide/?ref_=tt_stry_pg#certificates'
+        
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
             'sec-uh-a': '"Not A;Brand";v="99", "Chromium";v="109", "Google Chrome";v="109"',
@@ -157,7 +160,7 @@ def get_soup(id: str) -> Optional[BeautifulSoup]:
             'scheme': 'https',
             'authority': 'www.imdb.com'
         }
-        response = requests.get(f'https://www.imdb.com/title/{id}/parentalguide', headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, 'html5lib')
         return soup
@@ -172,124 +175,173 @@ def parse_content_rating(soup: BeautifulSoup) -> Dict[str, str]:
         categories = {}
         
         # Extract MPA Rating
-        mpa_rating_tag = soup.find(string=re.compile('Motion Picture Rating', re.IGNORECASE))
+        mpa_rating_tag = soup.find('div', id="contentRating")
         if mpa_rating_tag:
-            mpa_parent = mpa_rating_tag.find_parent()
-            if mpa_parent:
-                mpa_text = mpa_parent.find_next_sibling().text.strip()
-                mpa_rating_match = re.search(r'Rated (\w+)', mpa_text)
-                if mpa_rating_match:
-                    mpa_rating = mpa_rating_match.group(1)
-                    categories['mpa_rating'] = mpa_rating
-                    logger.info(f"Extracted MPA Rating: {mpa_rating}")
-                else:
-                    categories['mpa_rating'] = 'Unknown'
-                    logger.warning("MPA Rating not found.")
+            mpa_text = mpa_rating_tag.text.strip()
+            mpa_rating_match = re.search(r'Rated\s+(\w+)', mpa_text)
+            if mpa_rating_match:
+                mpa_rating = mpa_rating_match.group(1)
+                categories['mpa_rating'] = mpa_rating
+                logger.info(f"Extracted MPA Rating: {mpa_rating}")
             else:
                 categories['mpa_rating'] = 'Unknown'
-                logger.warning("MPA Rating parent not found.")
+                logger.warning("MPA Rating not found.")
         else:
             categories['mpa_rating'] = 'Unknown'
             logger.warning("MPA Rating tag not found.")
         
         # Define content categories to extract
-        content_categories = ['Sex & Nudity', 'Violence & Gore', 'Profanity', 'Alcohol, Drugs & Smoking', 'Frightening & Intense Scenes']
-        for category in content_categories:
-            # Find the category label
-            category_label = soup.find(string=re.compile(f'^{category}:', re.IGNORECASE))
+        content_categories = {
+            'nudity': "Sex & Nudity",
+            'violence': "Violence & Gore",
+            'profanity': "Profanity",
+            'alcohol': "Alcohol, Drugs & Smoking",
+            'frightening': "Frightening & Intense Scenes"
+        }
+
+        # Scrape each category's rating (e.g., mild, severe)
+        for key, display_name in content_categories.items():
+            category_label = soup.find('a', string=re.compile(f'^{display_name}:', re.IGNORECASE))
             if category_label:
-                # The severity is likely in the next sibling element
-                severity_tag = category_label.find_next()
+                severity_tag = category_label.find_next('div', class_='ipc-html-content-inner-div')
                 if severity_tag:
                     severity_text = severity_tag.text.strip().lower()
-                    # Normalize severity
-                    if 'severe' in severity_text:
-                        normalized_severity = 'strong'
-                    elif 'strong' in severity_text:
-                        normalized_severity = 'strong'
-                    elif 'moderate' in severity_text:
-                        normalized_severity = 'moderate'
-                    elif 'mild' in severity_text:
-                        normalized_severity = 'mild'
-                    elif 'minimal' in severity_text or 'very mild' in severity_text:
-                        normalized_severity = 'minimal'
-                    else:
-                        normalized_severity = 'none'
-                    
-                    key = category.lower().replace(' & ', '').replace(',', '').replace(' ', '_')
+                    normalized_severity = determine_severity(severity_text)
                     categories[key] = normalized_severity
-                    logger.info(f"Extracted {category}: {normalized_severity}")
+                    logger.info(f"Extracted {display_name}: {normalized_severity}")
                 else:
-                    key = category.lower().replace(' & ', '').replace(',', '').replace(' ', '_')
                     categories[key] = 'none'
-                    logger.info(f"{category} severity not found, defaulting to 'none'")
+                    logger.info(f"{display_name} severity not found, defaulting to 'none'")
             else:
-                key = category.lower().replace(' & ', '').replace(',', '').replace(' ', '_')
                 categories[key] = 'none'
-                logger.info(f"{category} label not found, defaulting to 'none'")
+                logger.info(f"{display_name} label not found, defaulting to 'none'")
         
         return categories
     except Exception as e:
         logger.error(f"Error in parse_content_rating: {e}")
         return {}
 
-def scrape_movie(id: str) -> List[Any]:
-    """Scrape movie/series content advisory information."""
+def parse_age_certificates(soup: BeautifulSoup) -> Optional[Dict[str, str]]:
+    """Parse the age certificates section for various countries."""
+    age_certificates = {}
+    try:
+        certificates_section = soup.find('ul', {'data-testid': 'certificates-container'})
+        if certificates_section:
+            certificates_items = certificates_section.find_all('li', {'data-testid': 'certificates-item'})
+            
+            for item in certificates_items:
+                country_tag = item.find('span', class_='ipc-metadata-list-item__label')
+                if country_tag:
+                    country = country_tag.text.strip()
+                else:
+                    logger.warning("Country tag not found in certificates item.")
+                    continue
+                
+                rating_tags = item.find_all('a', class_='ipc-metadata-list-item__list-content-item')
+                ratings = [tag.text.strip() for tag in rating_tags]
+                
+                if ratings:
+                    age_certificates[country] = ratings[0]  # Get the first rating for simplicity
+                    logger.info(f"Extracted {country} rating: {ratings[0]}")
+                else:
+                    logger.warning(f"No rating found for country: {country}")
+                    
+        else:
+            logger.warning("Certificates section not found.")
+    except Exception as e:
+        logger.error(f"Error in parse_age_certificates: {e}")
+        return None
+    
+    return age_certificates
+
+def scrape_movie(id: str) -> Dict[str, Any]:
+    """Scrape movie/series content advisory information including age certification."""
     try:
         soup = get_soup(id)
-        if soup:
-            # Log a snippet of the HTML to verify structure
-            snippet = soup.prettify()[:1000]  # Log first 1000 characters
-            logger.debug(f"HTML Snippet for ID {id}:\n{snippet}")
-            
-            # Parse content ratings
-            sections_data = parse_content_rating(soup)
-            if not sections_data:
-                logger.warning(f"No content ratings found for ID {id}.")
-                return ["No parental guide available.", "Unknown Title", 0]
-            
-            # Extract title
-            title = "Unknown Title"
-            title_tag = soup.find('meta', {'property': 'og:title'})
-            if title_tag and 'content' in title_tag.attrs:
-                title = title_tag['content'].replace(" Parental Guide | IMDb", "").strip()
+        if not soup:
+            return {
+                "content_description": "No parental guide available.",
+                "title": "Unknown Title",
+                "age_rating": 0,
+                "raw_ratings": {}
+            }
+        
+        # Log a snippet of the HTML to verify structure
+        snippet = soup.prettify()[:1000]  # Log first 1000 characters
+        logger.debug(f"HTML Snippet for ID {id}:\n{snippet}")
+        
+        # Parse content ratings
+        sections_data = parse_content_rating(soup)
+        if not sections_data:
+            logger.warning(f"No content ratings found for ID {id}.")
+        
+        # Parse age certificates
+        age_certificates = parse_age_certificates(soup)
+        if not age_certificates:
+            logger.warning(f"No age certificates found for ID {id}.")
+        
+        # Extract title
+        title = "Unknown Title"
+        title_tag = soup.find('meta', {'property': 'og:title'})
+        if title_tag and 'content' in title_tag.attrs:
+            title = title_tag['content'].replace(" Parental Guide | IMDb", "").strip()
+        else:
+            # Fallback to h1 tag
+            h1_tag = soup.find('h1')
+            if h1_tag:
+                title = h1_tag.text.strip()
             else:
-                # Fallback to h1 tag
-                h1_tag = soup.find('h1')
-                if h1_tag:
-                    title = h1_tag.text.strip()
-                else:
-                    logger.warning(f"Title not found for ID {id}.")
-            
-            logger.info(f"Extracted title: {title}")
-            
-            # Calculate age rating
-            age_rating = calculate_age_rating(sections_data)
-            logger.info(f"Calculated age rating for {title}: {age_rating}")
-            
-            # Compile content description
-            content_description = ""
-            for category, severity in sections_data.items():
-                if category == 'mpa_rating':
-                    content_description += f"[MPA Rating]\nRated {severity}\n"
-                elif category != 'mpa_rating':
-                    formatted_category = category.replace('_', ' ').title()
-                    content_description += f"[{formatted_category}]\n{severity.capitalize()}\n"
-            
-            logger.debug(f"Content Description:\n{content_description}")
-            
-            return [str(content_description), title, age_rating]
+                logger.warning(f"Title not found for ID {id}.")
+        
+        logger.info(f"Extracted title: {title}")
+        
+        # Calculate age rating
+        age_rating = calculate_age_rating(sections_data)
+        logger.info(f"Calculated age rating for {title}: {age_rating}")
+        
+        # Compile content description
+        content_description = ""
+        for category, severity in sections_data.items():
+            if category == 'mpa_rating':
+                content_description += f"[MPA Rating]\nRated {severity}\n"
+            else:
+                formatted_category = category.replace('_', ' ').title()
+                content_description += f"[{formatted_category}]\n{severity.capitalize()}\n"
+        
+        if age_certificates:
+            content_description += "\n[Age Certificates]\n"
+            for country, rating in age_certificates.items():
+                content_description += f"{country}: {rating}\n"
+        
+        logger.debug(f"Content Description:\n{content_description}")
+        
+        # Prepare raw ratings data
+        raw_ratings = {
+            'mpa_rating': sections_data.get('mpa_rating', 'Unknown'),
+            'content_categories': {k: v for k, v in sections_data.items() if k != 'mpa_rating'},
+            'age_certificates': age_certificates if age_certificates else {}
+        }
+        
+        return {
+            "content_description": content_description,
+            "title": title,
+            "age_rating": age_rating,
+            "raw_ratings": raw_ratings
+        }
     except Exception as e:
         logger.error(f"Error in scrape_movie for ID {id}: {e}")
-        return [str(e), "Unknown Title", 0]
+        return {
+            "content_description": str(e),
+            "title": "Unknown Title",
+            "age_rating": 0,
+            "raw_ratings": {}
+        }
 
 @cache.memoize(timeout=3600)
 def get_age_rating_for_content(imdb_id: str) -> Optional[int]:
     """Get age rating with caching."""
     data = scrape_movie(imdb_id)
-    if len(data) >= 3:
-        return data[2]
-    return None
+    return data.get('age_rating', None)
 
 def getEpId(seriesID: str) -> Optional[str]:
     """Get episode ID for a series."""
@@ -383,11 +435,14 @@ def addon_meta(type, id):
         imdb_id = id.split('-')[-1]
         data = scrape_movie(imdb_id)
         
-        if len(data) < 3:
-            raise ValueError("Insufficient data returned from scrape_movie")
+        if not data:
+            raise ValueError("No data returned from scrape_movie")
 
-        content, title, age_rating = data
-
+        content = data.get('content_description', '')
+        title = data.get('title', 'Unknown Title')
+        age_rating = data.get('age_rating', 0)
+        raw_ratings = data.get('raw_ratings', {})
+        
         # Check if content is allowed based on age rating
         if age_rating > ALLOWED_AGE:
             logger.info(f"Blocking content '{title}' with age rating {age_rating}")
@@ -404,7 +459,8 @@ def addon_meta(type, id):
             'name': title,
             'description': f"Parent's Guide:\n{content}",
             'ageRating': age_rating,
-            'ageRatingReason': get_rating_reasons(content)
+            'ageRatingReason': get_rating_reasons(content),
+            'raw_ratings': raw_ratings  # Include raw ratings data
         }
 
         # Format series title
@@ -622,9 +678,9 @@ def test_endpoint():
         }
         try:
             data = scrape_movie('tt0910970')  # WALL-E
-            if len(data) >= 3 and data[2] > 0:  # Check if age rating is valid
-                age_rating = data[2]
-                title = data[1]
+            if data.get('age_rating', 0) > 0:
+                age_rating = data['age_rating']
+                title = data.get('title', 'Unknown Title')
                 family_test['status'] = 'passed' if age_rating <= ALLOWED_AGE else 'failed'
                 family_test['details'] = f'{title} age rating: {age_rating}'
             else:
@@ -642,9 +698,9 @@ def test_endpoint():
         }
         try:
             data = scrape_movie('tt0110912')  # Pulp Fiction
-            if len(data) >= 3 and data[2] > 0:  # Check if age rating is valid
-                age_rating = data[2]
-                title = data[1]
+            if data.get('age_rating', 0) > 0:
+                age_rating = data['age_rating']
+                title = data.get('title', 'Unknown Title')
                 mature_test['status'] = 'passed' if age_rating > ALLOWED_AGE else 'failed'
                 mature_test['details'] = f'{title} age rating: {age_rating}'
             else:
@@ -704,13 +760,16 @@ def test_movie(movie_id):
     """Test endpoint for specific movie ID"""
     try:
         data = scrape_movie(movie_id)
-        if len(data) < 3:
+        if not data or 'age_rating' not in data:
             return respond_with({
                 'status': 'error',
                 'error': 'Insufficient data'
             }, 400)
             
-        content, title, age_rating = data
+        content = data.get('content_description', '')
+        title = data.get('title', 'Unknown Title')
+        age_rating = data.get('age_rating', 0)
+        raw_ratings = data.get('raw_ratings', {})
         
         return respond_with({
             'status': 'success',
@@ -718,6 +777,7 @@ def test_movie(movie_id):
                 'title': title,
                 'age_rating': age_rating,
                 'rating_reasons': get_rating_reasons(content),
+                'raw_ratings': raw_ratings,
                 'is_allowed': age_rating <= ALLOWED_AGE
             }
         })
