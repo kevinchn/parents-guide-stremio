@@ -731,6 +731,22 @@ def test_endpoint():
             'tests': []
         }
         
+        # Define a list of known test movies with their IMDb IDs and expected age ratings
+        test_movies = [
+            {'id': 'tt0111161', 'title': 'The Shawshank Redemption', 'expected_age': 15},
+            {'id': 'tt0068646', 'title': 'The Godfather', 'expected_age': 18},
+            {'id': 'tt0108052', 'title': 'Schindler\'s List', 'expected_age': 16},
+            {'id': 'tt1375666', 'title': 'Inception', 'expected_age': 13},
+            {'id': 'tt0468569', 'title': 'The Dark Knight', 'expected_age': 13},
+            {'id': 'tt0816692', 'title': 'Interstellar', 'expected_age': 13},
+            {'id': 'tt0109830', 'title': 'Forrest Gump', 'expected_age': 10},
+            {'id': 'tt0137523', 'title': 'Fight Club', 'expected_age': 18},
+            {'id': 'tt0167260', 'title': 'The Lord of the Rings: The Return of the King', 'expected_age': 13},
+            {'id': 'tt0110912', 'title': 'Pulp Fiction', 'expected_age': 17},  # Updated expected age
+            {'id': 'tt1375666', 'title': 'Gladiator II', 'expected_age': 16},  # New test movie
+            {'id': 'tt0910970', 'title': 'WALL·E', 'expected_age': 6},
+        ]
+        
         # Test 1: Manifest
         manifest_test = {
             'name': 'Manifest Check',
@@ -747,77 +763,66 @@ def test_endpoint():
             manifest_test['error'] = str(e)
         results['tests'].append(manifest_test)
 
-        # Test 2: Age-appropriate content (WALL-E)
-        family_test = {
-            'name': 'Family Content Check',
-            'endpoint': '/meta/movie/gpg-tt0910970'
-        }
-        try:
-            data = scrape_movie('tt0910970')  # WALL-E
-            if data.get('age_rating', 0) > 0:
-                age_rating = data['age_rating']
-                title = data.get('title', 'Unknown Title')
-                family_test['status'] = 'passed' if age_rating <= ALLOWED_AGE else 'failed'
-                family_test['details'] = f'{title} age rating: {age_rating}'
-            else:
-                family_test['status'] = 'failed'
-                family_test['error'] = 'Invalid age rating'
-        except Exception as e:
-            family_test['status'] = 'failed'
-            family_test['error'] = str(e)
-        results['tests'].append(family_test)
+        # Test 2 to N: Known Movies
+        for movie in test_movies:
+            movie_test = {
+                'name': f"Content Check - {movie['title']}",
+                'endpoint': f"/meta/movie/gpg-{movie['id']}"
+            }
+            try:
+                data = scrape_movie(movie['id'])
+                if data.get('age_rating', 0) > 0:
+                    age_rating = data['age_rating']
+                    title = data.get('title', 'Unknown Title')
+                    is_allowed = age_rating <= ALLOWED_AGE
+                    movie_test['status'] = 'passed' if is_allowed else 'failed'
+                    movie_test['details'] = f"{title} age rating: {age_rating} | Expected: {'Allowed' if age_rating <= ALLOWED_AGE else 'Blocked'}"
+                else:
+                    movie_test['status'] = 'failed'
+                    movie_test['error'] = 'Invalid age rating'
+            except Exception as e:
+                movie_test['status'] = 'failed'
+                movie_test['error'] = str(e)
+            results['tests'].append(movie_test)
 
-        # Test 3: Mature content (Pulp Fiction)
-        mature_test = {
-            'name': 'Mature Content Check',
-            'endpoint': '/meta/movie/gpg-tt0110912'
-        }
-        try:
-            data = scrape_movie('tt0110912')  # Pulp Fiction
-            if data.get('age_rating', 0) > 0:
-                age_rating = data['age_rating']
-                title = data.get('title', 'Unknown Title')
-                mature_test['status'] = 'passed' if age_rating > ALLOWED_AGE else 'failed'
-                mature_test['details'] = f'{title} age rating: {age_rating}'
-            else:
-                mature_test['status'] = 'failed'
-                mature_test['error'] = 'Invalid age rating'
-        except Exception as e:
-            mature_test['status'] = 'failed'
-            mature_test['error'] = str(e)
-        results['tests'].append(mature_test)
+        # Test 3: Search functionality with multiple queries
+        search_queries = ['disney', 'action', 'drama', 'comedy']
+        for query in search_queries:
+            search_test = {
+                'name': f'Search Function Check - Query: "{query}"',
+                'endpoint': f'/catalog/movie/gpg_search_movie?query={query}'
+            }
+            try:
+                items = search_imdb(query, 'movie')
+                search_test['status'] = 'passed' if len(items) > 0 else 'failed'
+                search_test['details'] = f'Found {len(items)} items'
+                if not items:
+                    search_test['error'] = 'No search results found'
+            except Exception as e:
+                search_test['status'] = 'failed'
+                search_test['error'] = str(e)
+            results['tests'].append(search_test)
 
-        # Test 4: Search functionality
-        search_test = {
-            'name': 'Search Function Check',
-            'endpoint': '/catalog/movie/gpg_search_movie?query=disney'
-        }
-        try:
-            items = search_imdb('disney', 'movie')
-            search_test['status'] = 'passed' if len(items) > 0 else 'failed'
-            search_test['details'] = f'Found {len(items)} items'
-            if not items:
-                search_test['error'] = 'No search results found'
-        except Exception as e:
-            search_test['status'] = 'failed'
-            search_test['error'] = str(e)
-        results['tests'].append(search_test)
-
-        # Test 5: Catalog functionality
-        catalog_test = {
-            'name': 'Catalog Function Check',
-            'endpoint': '/catalog/movie/gpg_movies_catalog'
-        }
-        try:
-            items = fetch_imdb_popular('movie')
-            catalog_test['status'] = 'passed' if len(items) > 0 else 'failed'
-            catalog_test['details'] = f'Found {len(items)} items'
-            if not items:
-                catalog_test['error'] = 'No catalog items found'
-        except Exception as e:
-            catalog_test['status'] = 'failed'
-            catalog_test['error'] = str(e)
-        results['tests'].append(catalog_test)
+        # Test 4: Catalog functionality for movies and series
+        catalog_tests = [
+            {'id': 'gpg_movies_catalog', 'type': 'movie', 'description': 'Popular Movies Catalog'},
+            {'id': 'gpg_series_catalog', 'type': 'series', 'description': 'Popular Series Catalog'}
+        ]
+        for catalog in catalog_tests:
+            catalog_test = {
+                'name': f'Catalog Function Check - {catalog["description"]}',
+                'endpoint': f'/catalog/{catalog["type"]}/{catalog["id"]}'
+            }
+            try:
+                items = fetch_imdb_popular(catalog['type'])
+                catalog_test['status'] = 'passed' if len(items) > 0 else 'failed'
+                catalog_test['details'] = f'Found {len(items)} items'
+                if not items:
+                    catalog_test['error'] = 'No catalog items found'
+            except Exception as e:
+                catalog_test['status'] = 'failed'
+                catalog_test['error'] = str(e)
+            results['tests'].append(catalog_test)
 
         # Calculate overall status - fail if any test failed
         failed_tests = [t for t in results['tests'] if t['status'] == 'failed']
@@ -875,7 +880,7 @@ def test_page():
         <style>
             body {
                 font-family: Arial, sans-serif;
-                max-width: 800px;
+                max-width: 1200px;
                 margin: 20px auto;
                 padding: 0 20px;
                 background: #f5f5f5;
@@ -914,7 +919,7 @@ def test_page():
                 margin-right: 10px;
                 border: 1px solid #ddd;
                 border-radius: 4px;
-                width: 200px;
+                width: 300px;
             }
             #testResults, #movieResults {
                 margin-top: 20px;
@@ -943,6 +948,30 @@ def test_page():
                 font-family: monospace;
                 white-space: pre-wrap;
             }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 10px;
+            }
+            th, td {
+                border: 1px solid #ddd;
+                padding: 8px;
+                text-align: left;
+            }
+            th {
+                background-color: #f2f2f2;
+            }
+            .log-section {
+                max-height: 200px;
+                overflow-y: scroll;
+                background: #333;
+                color: #fff;
+                padding: 10px;
+                border-radius: 4px;
+                font-family: monospace;
+                white-space: pre-wrap;
+                margin-top: 10px;
+            }
         </style>
     </head>
     <body>
@@ -954,7 +983,7 @@ def test_page():
         </div>
     
         <div class="test-card">
-            <h3>Run Tests</h3>
+            <h3>Run Comprehensive Tests</h3>
             <button onclick="runTests()">Run All Tests</button>
             <div id="testResults">
                 <!-- Test results will appear here -->
@@ -962,11 +991,19 @@ def test_page():
         </div>
     
         <div class="test-card">
-            <h3>Test Specific Movie</h3>
+            <h3>Test Specific Movie/Series</h3>
             <input type="text" id="movieId" class="movie-input" placeholder="Enter IMDb ID (e.g., tt0910970)">
-            <button onclick="testMovie()">Test Movie</button>
+            <button onclick="testMovie()">Test Movie/Series</button>
             <div id="movieResults">
                 <!-- Movie test results will appear here -->
+            </div>
+        </div>
+        
+        <div class="test-card">
+            <h3>Advanced Debugging Logs</h3>
+            <button onclick="fetchLogs()">Fetch Latest Logs</button>
+            <div id="debugLogs" class="log-section">
+                <!-- Debug logs will appear here -->
             </div>
         </div>
     
@@ -1017,7 +1054,7 @@ def test_page():
                     return;
                 }
     
-                document.getElementById('movieResults').innerHTML = '<p>Testing movie...</p>';
+                document.getElementById('movieResults').innerHTML = '<p>Testing movie/series...</p>';
                 
                 fetch(`/test/${movieId}`)
                     .then(response => response.json())
@@ -1056,9 +1093,18 @@ def test_page():
                         `;
                     });
             }
+            
+            function fetchLogs() {
+                // For advanced debugging, implement a server-side route to fetch logs
+                // This requires setting up log storage, which is beyond the current scope
+                // Placeholder for future implementation
+                document.getElementById('debugLogs').innerHTML = `
+                    <p>Advanced debugging logs are not yet implemented.</p>
+                `;
+            }
     
             // Run tests on page load
-            runTests();
+            window.onload = runTests;
         </script>
     </body>
     </html>
