@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Configure file logging with rotation
 from logging.handlers import RotatingFileHandler
 
-handler = RotatingFileHandler('addon.log', maxBytes=1000000, backupCount=5)
+handler = logging.StreamHandler() #RotatingFileHandler('addon.log', maxBytes=1000000, backupCount=5)
 handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 handler.setFormatter(formatter)
@@ -279,9 +279,10 @@ def parse_content_rating(soup: BeautifulSoup) -> Dict[str, str]:
                 # The severity is likely in the next sibling element
                 severity_tag = category_label.find_next('div', class_='ipc-html-content-inner-div')
                 if severity_tag:
-                    severity_text = severity_tag.text.strip().lower()
-                    normalized_severity = determine_severity(severity_text)
-                    categories[key] = normalized_severity
+                    #severity_text = severity_tag.text.strip().lower()
+                    #normalized_severity = determine_severity(severity_text)
+                    normalized_severity = severity_tag.text
+                    categories[key] = severity_tag.text.strip()
                     logger.info(f"Extracted {display_name}: {normalized_severity}")
                 else:
                     categories[key] = 'none'
@@ -293,6 +294,28 @@ def parse_content_rating(soup: BeautifulSoup) -> Dict[str, str]:
         return categories
     except Exception as e:
         logger.error(f"Error in parse_content_rating: {e}")
+        return {}
+
+def parse_content_comments(soup: BeautifulSoup) -> Dict[str, str]:
+    try:
+        categories = {}
+        
+        content_categories = {
+            'nudity': "Sex & Nudity",
+            'violence': "Violence & Gore",
+            'profanity': "Profanity",
+            'alcohol': "Alcohol, Drugs & Smoking",
+            'frightening': "Frightening & Intense Scenes"
+        }
+        for key, display_name in content_categories.items():
+            section = soup.find('div', attrs={'data-testid': f'sub-section-{key}'})
+            if section:
+                categories[key] = '\n'.join([f'• {text}' for text in section.stripped_strings])
+            if not section or not section.text:
+                categories[key] = 'none'
+        return categories
+    except Exception as e:
+        logger.error(f"Error in parse_content_comment: {e}")
         return {}
 
 def parse_age_certificates(soup: BeautifulSoup) -> Optional[Dict[str, str]]:
@@ -324,9 +347,16 @@ def parse_age_certificates(soup: BeautifulSoup) -> Optional[Dict[str, str]]:
             logger.warning("Certificates section not found.")
     except Exception as e:
         logger.error(f"Error in parse_age_certificates: {e}")
-        return None
+        return {}
     
     return age_certificates
+
+
+def parse_mpa(soup: BeautifulSoup) -> Optional[str]:
+    mpa = soup.find('span', string='Motion Picture Rating (MPA)')
+    if mpa:
+        return mpa.next_sibling.text
+
 
 def scrape_movie(id: str) -> Dict[str, Any]:
     """Scrape movie/series content advisory information including age certification."""
@@ -381,25 +411,32 @@ def scrape_movie(id: str) -> Dict[str, Any]:
             logger.warning(f"No certificates-based age rating calculated for {title}.")
         
         # Combine both ratings into one average rating
-        combined_age_rating = get_combined_age_rating(content_age_rating, certificates_age_rating)
+        combined_age_rating = certificates_age_rating if certificates_age_rating else content_age_rating
         logger.info(f"Combined age rating for {title}: {combined_age_rating}")
         
         # Compile content description
         content_description = ""
         for category, severity in content_categories.items():
             formatted_category = category.replace('_', ' ').title()
-            content_description += f"[{formatted_category}]\n{severity.capitalize()}\n"
+            content_description += f"[{formatted_category}]: {severity.capitalize()}\n"
         
-        if age_certificates:
-            content_description += "\n[Age Certificates]\n"
-            for country, rating in age_certificates.items():
-                content_description += f"{country}: {rating}\n"
+        #if age_certificates:
+        #    content_description += "\n[Age Certificates]\n"
+        #    for country, rating in age_certificates.items():
+        #        content_description += f"{country}: {rating}\n"
+        mpa = parse_mpa(soup)
+        content_description += f"\n[MPA]: {mpa}\n"
+        content_description += f"\n[Age]: {combined_age_rating}\n"
+        
+        for category, comments in parse_content_comments(soup).items():
+            formatted_category = category.replace('_', ' ').title()
+            content_description += f"\n[{formatted_category}]:\n{comments}\n"
         
         logger.debug(f"Content Description:\n{content_description}")
         
         # Prepare raw ratings data
         raw_ratings = {
-            'mpa_rating': 'Unknown',  # MPA Rating not scraped from parentalguide
+            'mpa_rating': mpa,
             'content_categories': content_categories,
             'age_certificates': age_certificates if age_certificates else {}
         }
@@ -583,14 +620,33 @@ def addon_stream(type, id):
             else:
                 abort(404)
 
+        url = f"stremio:///detail/{type}/gpg-{id}"
         streams = {
             "streams": [
                 {
                     "name": "Parents Guide",
-                    "externalUrl": f"stremio:///detail/{type}/gpg-{id}"
+                    "externalUrl": url
                 }
             ]
         }
+        
+        soup = get_soup(id)
+        if soup:
+            content_categories = parse_content_rating(soup)
+            content_comments = parse_content_comments(soup)
+            
+            description = f'[MPA]: {parse_mpa(soup)}\n'
+            description += '\n'.join([f"[{content.title()}]: {category.capitalize()}" for content, category in content_categories.items()])
+            description += f'\n[Age]: {calculate_age_certificates_rating(parse_age_certificates(soup))}'
+            streams['streams'][0]['description'] = description
+            
+            for content, category in content_categories.items():
+                streams["streams"].append({
+                    "name": f"{content.title()}:\n{category.capitalize()}",
+                    "description": content_comments.get(content, ""),
+                    "externalUrl": url
+                })
+
         return respond_with(streams)
     except Exception as e:
         logger.error(f"Error in addon_stream: {e}")
